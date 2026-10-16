@@ -1,0 +1,6 @@
+[submodule "ps5-mesa"]
+	path = ps5-mesa
+	url = https://github.com/cybervisi0n/ps5-mesa.git
+[submodule "ps5-opengnm-psbc"]
+	path = ps5-opengnm-psbc
+	url = https://github.com/cybervisi0n/ps5-opengnm-psbc.git
