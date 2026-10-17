@@ -135,9 +135,9 @@ ps5_egl_unlock(struct ps5_egl_lock_guard *guard)
    struct ps5_egl_lock_guard ps5_egl_guard \
       __attribute__((cleanup(ps5_egl_unlock))) = { &ps5_egl_mutex }
 
-int ps5_agc_gate2_present(unsigned buffer_index, unsigned swap_interval)
-   __attribute__((weak));
-int ps5_agc_gate2_shutdown_present(void) __attribute__((weak));
+int ps5_agc_gate2_present(unsigned buffer_index, unsigned swap_interval);
+   //__attribute__((weak));
+int ps5_agc_gate2_shutdown_present(void); //__attribute__((weak));
 int sceSystemServiceHideSplashScreen(void);
 
 int
