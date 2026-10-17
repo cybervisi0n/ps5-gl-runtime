@@ -3579,7 +3579,7 @@ static int run_frame_slot_test(const agc_api_t *agc, const video_api_t *video,
 }
 #endif
 
-int ps5agcMain(void)
+int ps5_agc_gate2_run(void)
 {
 #ifdef PS5_MULTIDRAW_BATCH
     if (runtime_batch_faulted)

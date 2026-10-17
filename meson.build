@@ -10,7 +10,7 @@ project('ps5-gl-runtime', ['c', 'cpp'],
 ps5_gl_runtime_srcs = files(
     'src/egl/ps5_egl.c',
     'src/gallium/ps5/ps5_screen.c',
-    'src/platform/ps5_agc_native_runtime.c',
+    #'src/platform/ps5_agc_native_runtime.c',
     'src/platform/ps5_agc_package.c',
     'src/platform/ps5_agc_runtime_backend.c'
 )

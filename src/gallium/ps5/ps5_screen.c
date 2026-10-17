@@ -4394,7 +4394,7 @@ int ps5_agc_gate2_set_graphics_state_mrt(
    const uint32_t blend_color[4], const uint32_t viewport[8],
    const uint32_t scissor[2], uint32_t rasterizer_control,
    uint32_t rasterizer_valid, const uint32_t polygon_offset[6],
-   uint32_t polygon_offset_valid) __attribute__((weak));
+   uint32_t polygon_offset_valid); //__attribute__((weak));
 int ps5_agc_gate2_set_viewport_states(
    const uint32_t viewport[PS5_MAX_VIEWPORTS][8],
    const uint32_t scissor[PS5_MAX_VIEWPORTS][2], unsigned count)
