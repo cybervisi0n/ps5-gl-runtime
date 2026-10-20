@@ -17,9 +17,7 @@ ps5_gl_runtime_srcs = files(
 )
 
 ps5_gl_runtime_shared_args = [
-	'-O3',
 	'-std=c11',
-	'-g',
 	'-Wall',
 	'-Wextra',
 	'-ffunction-sections',
@@ -34,6 +32,12 @@ ps5_gl_runtime_shared_args = [
     '-DPS5_MULTIDRAW_BATCH=1',
     '-DPS5_DEFERRED_DRAW_BATCH=1'
 ]
+
+if(get_option('buildtype') == 'debug')
+    ps5_gl_runtime_shared_args += [ '-g' ]
+else
+    ps5_gl_runtime_shared_args += [ '-O3' ]
+endif
 
 ps5_gl_runtime_includes = include_directories(
 	'src/gallium/ps5',

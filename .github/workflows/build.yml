@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build_debug:
     permissions:
       contents: write
     runs-on: ubuntu-24.04
@@ -27,5 +27,36 @@ jobs:
       - name: Create build container image
         run: ./drun.sh echo done
 
-      - name: Build
-        run: ./drun.sh ./scripts/ci_build.sh
+      - name: Build (debug)
+        run: ./drun.sh ./scripts/ci_build_debug.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ps5-gl-runtime_debug
+          path: build_debug/ps5-gl-runtime_debug
+
+  build_release:
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install Software
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends fuse git python3 wget zip
+
+      - name: Checkout Repo
+        uses: actions/checkout@v6
+
+      - name: Create build container image
+        run: ./drun.sh echo done
+
+      - name: Build (release)
+        run: ./drun.sh ./scripts/ci_build_release.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: ps5-gl-runtime_release
+          path: build_debug/ps5-gl-runtime_release
