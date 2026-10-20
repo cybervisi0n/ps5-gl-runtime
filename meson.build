@@ -12,7 +12,8 @@ ps5_gl_runtime_srcs = files(
     'src/gallium/ps5/ps5_screen.c',
     #'src/platform/ps5_agc_native_runtime.c',
     'src/platform/ps5_agc_package.c',
-    'src/platform/ps5_agc_runtime_backend.c'
+    'src/platform/ps5_agc_runtime_backend.c',
+    'src/core33-native-runtime/gl46_entrypoints.c'
 )
 
 ps5_gl_runtime_shared_args = [
@@ -25,7 +26,13 @@ ps5_gl_runtime_shared_args = [
 	'-fdata-sections',
 	'-DHAVE_FUNC_ATTRIBUTE_PACKED=1',
     '-DHAVE_STRUCT_TIMESPEC=1',
-    '-DHAVE_PTHREAD=1'
+    '-DHAVE_PTHREAD=1',
+    '-DPS5_NATIVE_TITLE_RUNTIME=1',
+    '-DPS5_FRAME_SUSPEND=1',
+    '-DPS5_DRAW_PROFILE=1',
+    '-DPS5_GPU_PRESENT_BATCH=1',
+    '-DPS5_MULTIDRAW_BATCH=1',
+    '-DPS5_DEFERRED_DRAW_BATCH=1'
 ]
 
 ps5_gl_runtime_includes = include_directories(
