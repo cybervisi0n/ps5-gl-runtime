@@ -59,4 +59,4 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: ps5-gl-runtime_release
-          path: build_debug/ps5-gl-runtime_release
+          path: build_release/ps5-gl-runtime_release
