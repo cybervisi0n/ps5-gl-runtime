@@ -7123,6 +7123,185 @@ ps5_transfer_flush_region(struct pipe_context *context,
    ps5_publish_transfer_write(transfer, box);
 }
 
+static inline void
+ps5_copy_texel_span(uint8_t *dst, const uint8_t *src, unsigned bytes)
+{
+   switch (bytes) {
+   case 1:
+      *dst = *src;
+      break;
+   case 2:
+      memcpy(dst, src, 2);
+      break;
+   case 4:
+      memcpy(dst, src, 4);
+      break;
+   case 8:
+      memcpy(dst, src, 8);
+      break;
+   case 16:
+      memcpy(dst, src, 16);
+      break;
+   case 32:
+      memcpy(dst, src, 32);
+      break;
+   default:
+      memcpy(dst, src, bytes);
+      break;
+   }
+}
+
+static __attribute__((noinline)) void
+ps5_transfer_unmap_staged(struct ps5_transfer *ps5,
+                          struct ps5_resource *resource)
+{
+   const struct pipe_transfer *transfer = &ps5->base;
+   const unsigned box_x = (unsigned)transfer->box.x;
+   const unsigned box_y = (unsigned)transfer->box.y;
+   const unsigned box_z = (unsigned)transfer->box.z;
+   const unsigned box_w = (unsigned)transfer->box.width;
+   const unsigned box_h = (unsigned)transfer->box.height;
+   const unsigned box_d = (unsigned)transfer->box.depth;
+   const size_t src_stride = transfer->stride;
+   const uint8_t *src_base = (const uint8_t *)ps5->staging;
+   uint8_t *dst_data = resource->data;
+   const size_t allocation_size = resource->allocation_size;
+   uint32_t x_offsets[256];
+   const unsigned x_count = MIN2(box_w, ARRAY_SIZE(x_offsets));
+
+   if ((resource->base.bind & PIPE_BIND_DEPTH_STENCIL) &&
+       !resource->depth_staging_size &&
+       (resource->base.format == PIPE_FORMAT_Z32_FLOAT ||
+        resource->base.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT)) {
+      const bool packed =
+         resource->base.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT;
+      const unsigned width0 = resource->base.width0;
+      const unsigned height0 = resource->base.height0;
+      const size_t depth_layer_size =
+         ps5_tiled_depth_surface_size(width0, height0, 1);
+      const size_t stencil_layer_size =
+         ps5_tiled_stencil_surface_size(width0, height0);
+      const unsigned format_size =
+         ps5_texture_format_size(resource->base.format);
+      const size_t src_layer_stride = transfer->layer_stride;
+      uint8_t *stencil_data = resource->stencil_data;
+      const size_t stencil_allocation_size = resource->stencil_allocation_size;
+      uint16_t stencil_x_offsets[256];
+
+      for (unsigned i = 0; i < x_count; ++i) {
+         const unsigned tile_x = (box_x + i) & 255u;
+         x_offsets[tile_x] =
+            (uint32_t)ps5_tiled_depth_offset(tile_x, 0, width0, 0);
+         if (packed)
+            stencil_x_offsets[tile_x] =
+               (uint16_t)ps5_tiled_stencil_offset(tile_x, 0, width0, 0);
+      }
+
+      for (unsigned z = 0; z < box_d; ++z) {
+         const unsigned layer = box_z + z;
+         const size_t depth_layer = (size_t)layer * depth_layer_size;
+         const size_t stencil_layer = (size_t)layer * stencil_layer_size;
+         const uint8_t *src_layer = src_base + (size_t)z * src_layer_stride;
+
+         for (unsigned y = 0; y < box_h; ++y) {
+            const unsigned cur_y = box_y + y;
+            const size_t depth_row =
+               ps5_tiled_depth_offset(0, cur_y, width0, layer);
+            const size_t depth_row_base =
+               depth_layer + (depth_row & ~(size_t)0xffff);
+            const uint32_t depth_row_xor = (uint32_t)(depth_row & 0xffffu);
+            const size_t stencil_row = packed
+               ? ps5_tiled_stencil_offset(0, cur_y, width0, layer) : 0;
+            const size_t stencil_row_base =
+               stencil_layer + (stencil_row & ~(size_t)0xffff);
+            const uint16_t stencil_row_xor = (uint16_t)(stencil_row & 0xffffu);
+            const uint8_t *src_row = src_layer + (size_t)y * src_stride;
+
+            for (unsigned x = 0; x < box_w;) {
+               const unsigned cur_x = box_x + x;
+               const unsigned step =
+                  !packed && !(cur_x & 1u) && box_w - x >= 2 ? 2u : 1u;
+               const unsigned bytes = step * 4u;
+               const size_t depth_offset = depth_row_base +
+                  ((size_t)(cur_x >> 8) << 17) +
+                  (x_offsets[cur_x & 255u] ^ depth_row_xor);
+               const uint8_t *pixel = src_row + (size_t)x * format_size;
+
+               if (depth_offset <= allocation_size &&
+                   allocation_size - depth_offset >= bytes)
+                  ps5_copy_texel_span(dst_data + depth_offset, pixel, bytes);
+               if (packed) {
+                  const size_t stencil_offset = stencil_row_base +
+                     ((size_t)(cur_x >> 8) << 16) +
+                     (uint16_t)(stencil_x_offsets[cur_x & 255u] ^ stencil_row_xor);
+                  if (stencil_offset < stencil_allocation_size)
+                     stencil_data[stencil_offset] = pixel[4];
+               }
+               x += step;
+            }
+         }
+      }
+      ps5_flush_gpu_data(dst_data, allocation_size);
+      if (packed)
+         ps5_flush_gpu_data(stencil_data, stencil_allocation_size);
+   } else {
+      const enum pipe_format format = resource->base.format;
+      const unsigned format_size = ps5_texture_format_size(format);
+      const bool msaa4 = resource->base.nr_samples == 4;
+      const unsigned samples = msaa4 ? 4u : 1u;
+      const unsigned surface_width = msaa4
+         ? resource->base.width0
+         : ps5_tiled_rgba8_width(resource);
+      const unsigned group_pixels =
+         format_size == 1 ? 8u : MAX2(16u / format_size, 2u);
+      const size_t layer_base = (size_t)box_z * resource->layer_stride;
+      const size_t stride_256 = msaa4
+         ? ps5_tiled_color_msaa4_offset(format, 256, 0, 0, surface_width, 0)
+         : ps5_tiled_color_offset(format, 256, 0, surface_width, 0);
+      uint32_t sample_xor[4] = {0};
+
+      if (msaa4) {
+         for (unsigned s = 0; s < 4; ++s)
+            sample_xor[s] = (uint32_t)ps5_tiled_color_msaa4_offset(
+               format, 0, 0, s, surface_width, 0) & 0xffffu;
+      }
+      for (unsigned i = 0; i < x_count; ++i) {
+         const unsigned tile_x = (box_x + i) & 255u;
+         x_offsets[tile_x] = (uint32_t)(msaa4
+            ? ps5_tiled_color_msaa4_offset(format, tile_x, 0, 0, surface_width, 0)
+            : ps5_tiled_color_offset(format, tile_x, 0, surface_width, 0));
+      }
+      for (unsigned y = 0; y < box_h; ++y) {
+         const size_t row = msaa4
+            ? ps5_tiled_color_msaa4_offset(format, 0, box_y + y, 0, surface_width, box_z)
+            : ps5_tiled_color_offset(format, 0, box_y + y, surface_width, box_z);
+         const size_t row_base = layer_base + (row & ~(size_t)0xffff);
+         const uint32_t row_xor = (uint32_t)(row & 0xffffu);
+         const uint8_t *src_row = src_base + (size_t)y * src_stride;
+
+         for (unsigned x = 0; x < box_w;) {
+            const unsigned cur_x = box_x + x;
+            const unsigned step =
+               !(cur_x & (group_pixels - 1u)) && box_w - x >= group_pixels
+                  ? group_pixels : 1u;
+            const unsigned bytes = step * format_size;
+            const size_t block_base = row_base + (cur_x >> 8) * stride_256;
+            const uint32_t x_xor = x_offsets[cur_x & 255u] ^ row_xor;
+            const uint8_t *src = src_row + (size_t)x * format_size;
+
+            for (unsigned s = 0; s < samples; ++s) {
+               const size_t tiled = block_base + (x_xor ^ sample_xor[s]);
+               if (tiled <= allocation_size && allocation_size - tiled >= bytes)
+                  ps5_copy_texel_span(dst_data + tiled, src, bytes);
+            }
+            x += step;
+         }
+      }
+      ps5_flush_gpu_data(dst_data, allocation_size);
+   }
+   ps5_transfer_free_staging(ps5);
+}
+
 static void
 ps5_transfer_unmap(struct pipe_context *context,
                    struct pipe_transfer *transfer)
@@ -7135,93 +7314,22 @@ ps5_transfer_unmap(struct pipe_context *context,
    struct ps5_transfer *ps5 = (struct ps5_transfer *)transfer;
    struct ps5_resource *resource =
       (struct ps5_resource *)transfer->resource;
+   const unsigned usage = transfer->usage;
 
    (void)context;
-   if (resource->base.target != PIPE_BUFFER || (transfer->usage & PIPE_MAP_READ) ||
-       !(transfer->usage & PIPE_MAP_UNSYNCHRONIZED))
-      ps5_draw_batch_drain_buffer(transfer->resource);
-   if (ps5->staging && (transfer->usage & PIPE_MAP_WRITE) &&
-       (transfer->resource->bind & PIPE_BIND_DEPTH_STENCIL) &&
-       !resource->depth_staging_size &&
-       (transfer->resource->format == PIPE_FORMAT_Z32_FLOAT ||
-        transfer->resource->format ==
-           PIPE_FORMAT_Z32_FLOAT_S8X24_UINT)) {
-      const bool packed = resource->base.format ==
-                          PIPE_FORMAT_Z32_FLOAT_S8X24_UINT;
-      const size_t depth_layer_size = ps5_tiled_depth_surface_size(
-         resource->base.width0, resource->base.height0, 1);
-      const size_t stencil_layer_size = ps5_tiled_stencil_surface_size(
-         resource->base.width0, resource->base.height0);
-      const unsigned format_size =
-         ps5_texture_format_size(resource->base.format);
-
-      for (unsigned z = 0; z < (unsigned)transfer->box.depth; ++z) {
-         const size_t depth_layer =
-            ((size_t)(unsigned)transfer->box.z + z) * depth_layer_size;
-         const size_t stencil_layer =
-            ((size_t)(unsigned)transfer->box.z + z) * stencil_layer_size;
-
-         for (unsigned y = 0; y < (unsigned)transfer->box.height; ++y) {
-            for (unsigned x = 0; x < (unsigned)transfer->box.width; ++x) {
-               const size_t depth_offset = depth_layer +
-                  ps5_tiled_depth_offset((unsigned)transfer->box.x + x,
-                     (unsigned)transfer->box.y + y,
-                     resource->base.width0, (unsigned)transfer->box.z + z);
-               const uint8_t *pixel = (const uint8_t *)ps5->staging +
-                  z * transfer->layer_stride + y * transfer->stride +
-                  x * format_size;
-
-               if (depth_offset <= resource->allocation_size &&
-                   resource->allocation_size - depth_offset >= 4)
-                  memcpy(resource->data + depth_offset, pixel, 4);
-               if (packed) {
-                  const size_t stencil_offset = stencil_layer +
-                     ps5_tiled_stencil_offset(
-                        (unsigned)transfer->box.x + x,
-                        (unsigned)transfer->box.y + y,
-                        resource->base.width0, (unsigned)transfer->box.z + z);
-
-                  if (stencil_offset < resource->stencil_allocation_size)
-                     resource->stencil_data[stencil_offset] = pixel[4];
-               }
-            }
-         }
-      }
-      ps5_flush_gpu_data(resource->data, resource->allocation_size);
-      if (packed)
-         ps5_flush_gpu_data(resource->stencil_data,
-                            resource->stencil_allocation_size);
-   } else if (ps5->staging && (transfer->usage & PIPE_MAP_WRITE)) {
-      size_t layer_base =
-         (size_t)(unsigned)transfer->box.z * resource->layer_stride;
-      unsigned format_size = ps5_texture_format_size(resource->base.format);
-
-      for (unsigned y = 0; y < (unsigned)transfer->box.height; ++y) {
-         for (unsigned x = 0; x < (unsigned)transfer->box.width; ++x) {
-            const unsigned samples = MAX2(resource->base.nr_samples, 1u);
-            for (unsigned sample = 0; sample < samples; ++sample) {
-               size_t tiled = layer_base + (samples == 4
-                  ? ps5_tiled_color_msaa4_offset(resource->base.format,
-                       (unsigned)transfer->box.x + x, (unsigned)transfer->box.y + y,
-                       sample, resource->base.width0, (unsigned)transfer->box.z)
-                  : ps5_tiled_color_offset(resource->base.format,
-                       (unsigned)transfer->box.x + x, (unsigned)transfer->box.y + y,
-                       ps5_tiled_rgba8_width(resource), (unsigned)transfer->box.z));
-
-               if (tiled <= resource->allocation_size &&
-                   resource->allocation_size - tiled >= format_size)
-                  memcpy(resource->data + tiled,
-                         (uint8_t *)ps5->staging +
-                            y * transfer->stride + x * format_size,
-                         format_size);
-            }
-         }
-      }
-      ps5_flush_gpu_data(resource->data, resource->allocation_size);
+   if (!(usage & PIPE_MAP_WRITE)) {
+      if (ps5->staging)
+         ps5_transfer_free_staging(ps5);
+      free(ps5);
+      return;
    }
-   if (!(transfer->usage & PIPE_MAP_FLUSH_EXPLICIT))
+   if (resource->base.target != PIPE_BUFFER || (usage & PIPE_MAP_READ) ||
+       !(usage & PIPE_MAP_UNSYNCHRONIZED))
+      ps5_draw_batch_drain_buffer(transfer->resource);
+   if (ps5->staging)
+      ps5_transfer_unmap_staged(ps5, resource);
+   else if (!(usage & PIPE_MAP_FLUSH_EXPLICIT))
       ps5_publish_transfer_write(transfer, NULL);
-   ps5_transfer_free_staging(ps5);
    free(ps5);
 }
 
